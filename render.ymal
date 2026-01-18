@@ -1,0 +1,24 @@
+
+services:
+
+  - type: web
+
+    name: telegram-bot
+
+    env: python
+
+    plan: free
+
+    buildCommand: pip install -r requirements.txt
+
+    startCommand: python app.py
+
+    envVars:
+
+      - key: TELEGRAM_TOKEN
+
+        sync: false
+
+      - key: DEEPSEEK_API_KEY
+
+        sync: false
