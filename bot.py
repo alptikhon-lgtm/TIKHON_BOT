@@ -5,48 +5,41 @@ from flask import Flask, render_template_string
 import os
 import threading
 import time
-import sys
 
-TOKEN = "8565116421:AAFVGEG0a-gbFtmQaWovh4Hv2tCHc_VAsdc"
+
+
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 bot = telebot.TeleBot(TOKEN)
-DEEPSEEK_API_KEY = "sk-00c783ad1fd84101bac89a5c0f5ae453"
+app = Flask(__name__)
 
 
-# Экономия токенов
 
-MAX_TOKENS = 300 #больше токенов больше ответ
+MAX_TOKENS = 200
 API_URL = "https://api.deepseek.com/v1/chat/completions"
-
-#потом заменить на базу
 user_usage = {}
 
-#Проверка лимитов. Увеличивает кол-во исп. вопросов + 1
+
+
 def check_daily_limit(user_id):
-    """Проверка лимита запросов в день"""
     today = datetime.now().date().isoformat()
 
-    #Впервые зашел в бота
     if user_id not in user_usage:
         user_usage[user_id] = {'date': today, 'count': 1}
         return True
-    #Если наступил след. день. сбросить лимит запросов
+
     if user_usage[user_id]['date'] != today:
         user_usage[user_id] = {'date': today, 'count': 1}
         return True
 
-    #Если лимит исчерпан !!!!!!!
-    if user_usage[user_id]['count'] >= 15:  # Максимум 10 вопросов в день
+    if user_usage[user_id]['count'] >= 15:
         return False
 
     user_usage[user_id]['count'] += 1
     return True
 
 
-#Запрос к DeepSeek API с оптимизацией токенов
 def askDeepseek(question):
-
-
-    # Обрезаем вопрос если слишком длинный
     if len(question) > 300:
         question = question[:300] + "..."
 
@@ -60,137 +53,143 @@ def askDeepseek(question):
         "messages": [
             {
                 "role": "system",
-                "content": "Ты полезный помощник. Отвечай максимально кратко и по делу. Ограничь ответ 3-4 предложениями."
+                "content": "Ты полезный помощник. Отвечай максимально кратко и по делу. Ограничь ответ 3-4 предложениями. Используй не более 600-700 букв в ответе"
             },
             {
                 "role": "user",
                 "content": question
             }
         ],
-        "max_tokens": MAX_TOKENS,  # Экономим токены
-        "temperature": 0.7,  # Уменьшил температуру для более предсказуемых ответов
+        "max_tokens": MAX_TOKENS,
+        "temperature": 0.5,
         "stream": False
     }
-
-    try:
-        response = requests.post(API_URL, headers=headers, json=data, timeout=30)
-
-        if response.status_code == 200:
-            result = response.json()
-            return result['choices'][0]['message']['content'].strip()
-        else:
-            print(f"Ошибка API: {response.status_code}, {response.text}")
-            return f"Ошибка: {response.status_code}. Попробуйте позже."
-
-    except requests.exceptions.Timeout:
-        return "Время ожидания истекло. Попробуйте снова."
-    except Exception as e:
-        print(f"Ошибка в askDeepseek: {e}")
-        return "Произошла ошибка при обработке запроса."
-
+    response = requests.post(API_URL, headers=headers, json=data, timeout=30)
+    if response.status_code == 200:
+        result = response.json()
+        return result['choices'][0]['message']['content'].strip()
 
 
 @bot.message_handler(commands=['start'])
 def start(message):
-
-    welcome_text = "Привет"
+    welcome_text = "🤖 Это бот-дипсик. Задай вопрос и получи краткий ответ.\n\nИспользуй команду:\n/ai [твой вопрос]\n\nПример: /ai Что такое искусственный интеллект?"
     bot.send_message(message.chat.id, welcome_text)
 
 
 @bot.message_handler(commands=['ai'])
 def deepseekSearch(message):
-    """Обработчик команды /ai"""
     user_id = message.from_user.id
 
-    @bot.message_handler(func=lambda message: True)
-    def echo_all(message):
+    if not check_daily_limit(user_id):
+        bot.send_message(
+            message.chat.id,
+            "❌ Вы превысили дневной лимит в 15 вопросов. Попробуйте завтра!"
+        )
+        return
 
-        if message.text.startswith('/'):
-            return
+    user_question = message.text.replace("/ai", "").strip()
 
-        bot.reply_to(message, " Используйте команду /ai для вопросов\n\nПример: /ai Как работает нейросеть?")
+    if not user_question:
+        bot.send_message(
+            message.chat.id,
+            "📝 Пожалуйста, напишите вопрос после команды /ai\n\nПример: /ai Что такое ИИ?"
+        )
+        return
 
-    # ========== FLASK СЕРВЕР ==========
+    bot.send_chat_action(message.chat.id, 'typing')
+    deepseekAnswer = askDeepseek(user_question)
+    bot.send_message(message.chat.id, deepseekAnswer)
+
+
+@bot.message_handler(func=lambda message: True)
+def echo_all(message):
+    if message.text.startswith('/'):
+        return
+    bot.reply_to(message, "🤔 Используйте команду /ai для вопросов\n\nПример: /ai Как работает нейросеть?")
+
+
+# ========== FLASK СЕРВЕР ==========
 HTML_TEMPLATE = '''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>🤖 Telegram Bot</title>
-        <meta http-equiv="refresh" content="300">
-        <style>
-            body { 
-                font-family: Arial, sans-serif; 
-                max-width: 800px; 
-                margin: 50px auto; 
-                padding: 20px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                text-align: center;
-            }
-            .container {
-                background: rgba(255, 255, 255, 0.1);
-                padding: 30px;
-                border-radius: 15px;
-                backdrop-filter: blur(10px);
-            }
-            h1 { 
-                font-size: 2.5em; 
-                margin-bottom: 10px;
-            }
-            .status {
-                padding: 10px;
-                margin: 20px 0;
-                border-radius: 10px;
-                font-weight: bold;
-            }
-            .online { background: #4CAF50; }
-            .stats { 
-                background: rgba(255, 255, 255, 0.2); 
-                padding: 15px; 
-                border-radius: 10px;
-                margin: 20px 0;
-            }
-            .btn {
-                display: inline-block;
-                padding: 12px 24px;
-                background: white;
-                color: #667eea;
-                text-decoration: none;
-                border-radius: 25px;
-                font-weight: bold;
-                margin: 10px;
-                transition: transform 0.3s;
-            }
-            .btn:hover {
-                transform: translateY(-3px);
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🤖 Telegram Bot</h1>
-            <p>Бот работает в режиме polling + Flask</p>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🤖 Telegram Bot</title>
+    <meta http-equiv="refresh" content="300">
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 50px auto; 
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-align: center;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 30px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+        h1 { 
+            font-size: 2.5em; 
+            margin-bottom: 10px;
+        }
+        .status {
+            padding: 10px;
+            margin: 20px 0;
+            border-radius: 10px;
+            font-weight: bold;
+        }
+        .online { background: #4CAF50; }
+        .stats { 
+            background: rgba(255, 255, 255, 0.2); 
+            padding: 15px; 
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+        .btn {
+            display: inline-block;
+            padding: 12px 24px;
+            background: white;
+            color: #667eea;
+            text-decoration: none;
+            border-radius: 25px;
+            font-weight: bold;
+            margin: 10px;
+            transition: transform 0.3s;
+        }
+        .btn:hover {
+            transform: translateY(-3px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Telegram Bot</h1>
+        <p>Бот работает в режиме polling + Flask</p>
 
-            <div class="status online">
-                ✅ СТАТУС: ОНЛАЙН
-            </div>
-
-            <div class="stats">
-                <p>🕒 Время сервера: {{ time }}</p>
-                <p>👤 Пользователей сегодня: {{ users_today }}</p>
-                <p>📊 Всего запросов сегодня: {{ total_requests }}</p>
-                <p>⏰ Автообновление: каждые 5 минут</p>
-            </div>
-
-            <p>
-                <a href="https://t.me/{{ bot_username }}" class="btn" target="_blank">
-                    💬 Написать боту
-                </a>
-            </p>
+        <div class="status online">
+            ✅ СТАТУС: ОНЛАЙН
         </div>
-    </body>
-    </html>
-    '''
+
+        <div class="stats">
+            <p>🕒 Время сервера: {{ time }}</p>
+            <p>👤 Пользователей сегодня: {{ users_today }}</p>
+            <p>📊 Всего запросов сегодня: {{ total_requests }}</p>
+            <p>⏰ Автообновление: каждые 5 минут</p>
+        </div>
+
+        <p>
+            <a href="https://t.me/{{ bot_username }}" class="btn" target="_blank">
+                💬 Написать боту
+            </a>
+        </p>
+    </div>
+</body>
+</html>
+'''
+
 
 @app.route('/')
 def home():
